@@ -1,6 +1,7 @@
 import os
 import torch
 from typing import Union, List, Tuple
+from sklearn.model_selection import train_test_split
 from sentencepiece import SentencePieceTrainer, SentencePieceProcessor
 from torch.utils.data import Dataset
 
@@ -27,7 +28,11 @@ class TextDataset(Dataset):
             SentencePieceTrainer.train(
                 input=data_file, vocab_size=vocab_size,
                 model_type=model_type, model_prefix=sp_model_prefix,
-                normalization_rule_name=normalization_rule_name
+                normalization_rule_name=normalization_rule_name,
+                bos_id=0, 
+                eos_id=1, 
+                pad_id=2, 
+                unk_id=3
             )
         # load tokenizer from file
         self.sp_model = SentencePieceProcessor(model_file=sp_model_prefix + '.model')
@@ -35,12 +40,12 @@ class TextDataset(Dataset):
         with open(data_file) as file:
             texts = file.readlines()
 
-        """
-        YOUR CODE HERE (⊃｡•́‿•̀｡)⊃━✿✿✿✿✿✿
-        Split texts to train and validation fixing self.TRAIN_VAL_RANDOM_SEED
-        The validation ratio is self.VAL_RATIO
-        """
-        train_texts, val_texts = None, None
+        
+        train_texts, val_texts = train_test_split(
+            texts,
+            test_size=self.VAL_RATIO,
+            random_state=self.TRAIN_VAL_RANDOM_SEED
+        )
         self.texts = train_texts if train else val_texts
         self.indices = self.sp_model.encode(self.texts)
 
@@ -83,14 +88,14 @@ class TextDataset(Dataset):
         :param item: text id
         :return: encoded text indices and its actual length (including BOS and EOS specials)
         """
-        # These are placeholders, you may remove them.
-        indices = torch.randint(high=self.vocab_size, size=(self.max_length, ))
-        length = torch.randint(low=1, high=self.max_length + 1, size=()).item()
-        """
-        YOUR CODE HERE (⊃｡•́‿•̀｡)⊃━✿✿✿✿✿✿
-        Take corresponding index array from self.indices,
-        add special tokens (self.bos_id and self.eos_id) and 
-        pad to self.max_length using self.pad_id.
-        Return padded indices of size (max_length, ) and its actual length
-        """
-        return indices, length
+        token_ids = [self.bos_id] + self.indices[item] + [self.eos_id]
+        length = len(token_ids)
+
+        if length > self.max_length:
+            token_ids = token_ids[:self.max_length]
+            length = self.max_length
+        else:
+            token_ids = token_ids + [self.pad_id] * (self.max_length - len(token_ids))
+
+        indices_tns = torch.tensor(token_ids, dtype=torch.long)
+        return indices_tns, length

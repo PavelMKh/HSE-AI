@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -25,11 +26,8 @@ def plot_losses(train_losses: List[float], val_losses: List[float]):
     axs[0].plot(range(1, len(val_losses) + 1), val_losses, label='val')
     axs[0].set_ylabel('loss')
 
-    """
-    YOUR CODE HERE (⊃｡•́‿•̀｡)⊃━✿✿✿✿✿✿
-    Calculate train and validation perplexities given lists of losses
-    """
-    train_perplexities, val_perplexities = [], []
+    train_perplexities = [np.exp(loss) for loss in train_losses]
+    val_perplexities = [np.exp(loss) for loss in val_losses]
 
     axs[1].plot(range(1, len(train_perplexities) + 1), train_perplexities, label='train')
     axs[1].plot(range(1, len(val_perplexities) + 1), val_perplexities, label='val')
@@ -54,18 +52,43 @@ def training_epoch(model: LanguageModel, optimizer: torch.optim.Optimizer, crite
     :return: running train loss
     """
     device = next(model.parameters()).device
-    train_loss = 0.0
+    total_loss = 0.0
 
     model.train()
-    for indices, lengths in tqdm(loader, desc=tqdm_desc):
-        """
-        YOUR CODE HERE (⊃｡•́‿•̀｡)⊃━✿✿✿✿✿✿
-        Process one training step: calculate loss,
-        call backward and make one optimizer step.
-        Accumulate sum of losses for different batches in train_loss
-        """
 
-    train_loss /= len(loader.dataset)
+    for batch_idx, batch_lengths in tqdm(loader, desc=tqdm_desc):
+        batch_idx = batch_idx.to(device)
+
+        sorted_lengths, perm_idx = torch.sort(batch_lengths, descending=True)
+        sorted_indices = batch_idx[perm_idx]
+
+        outputs = model(sorted_indices, sorted_lengths)
+
+        max_seq_len = min(sorted_lengths.max().item(), model.max_length) - 1
+
+        if max_seq_len < 1:
+            continue 
+
+        targets = sorted_indices[:, 1:max_seq_len + 1]
+        predictions = outputs[:, :max_seq_len, :]
+
+        mask = (targets != model.pad_id).float()
+        total_tokens = mask.sum()
+
+
+        predictions_flat = predictions.reshape(-1, predictions.size(-1))
+        targets_flat = targets.reshape(-1)
+
+        loss_per_token = criterion(predictions_flat, targets_flat)
+        masked_loss = (loss_per_token * mask.reshape(-1)).sum() / total_tokens
+
+        optimizer.zero_grad()
+        masked_loss.backward()
+        optimizer.step()
+
+        total_loss = total_loss + masked_loss.item() * batch_idx.size(0)
+
+    train_loss = total_loss / len(loader.dataset)
     return train_loss
 
 
@@ -81,18 +104,35 @@ def validation_epoch(model: LanguageModel, criterion: nn.Module,
     :return: validation loss
     """
     device = next(model.parameters()).device
-    val_loss = 0.0
-
     model.eval()
-    for indices, lengths in tqdm(loader, desc=tqdm_desc):
-        """
-        YOUR CODE HERE (⊃｡•́‿•̀｡)⊃━✿✿✿✿✿✿
-        Process one validation step: calculate loss.
-        Accumulate sum of losses for different batches in val_loss
-        """
+    total_loss = 0.0
 
-    val_loss /= len(loader.dataset)
-    return val_loss
+    for batch_indices, batch_lengths in tqdm(loader, desc=tqdm_desc):
+        batch_indices = batch_indices.to(device)
+
+        sorted_lengths, perm_idx = torch.sort(batch_lengths, descending=True)
+        sorted_indices = batch_indices[perm_idx]
+
+        max_seq_len = min(sorted_lengths.max().item(), model.max_length) - 1
+
+        logits = model(sorted_indices, sorted_lengths)
+        logits = logits[:, :max_seq_len, :]
+
+        targets = sorted_indices[:, 1:max_seq_len + 1]
+
+        mask = (targets != model.pad_id).float()
+        total_tokens = mask.sum()
+
+        logits_flat = logits.reshape(-1, logits.size(-1))
+        targets_flat = targets.reshape(-1)
+
+        losses = criterion(logits_flat, targets_flat)
+        masked_loss = (losses * mask.reshape(-1)).sum() / total_tokens
+
+        total_loss += masked_loss.item() * sorted_indices.size(0)
+
+    average_loss = total_loss / len(loader.dataset)
+    return average_loss
 
 
 def train(model: LanguageModel, optimizer: torch.optim.Optimizer, scheduler: Optional[Any],
